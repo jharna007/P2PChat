@@ -1,19 +1,11 @@
 package com.kaifcodec.p2pchat.models
 
 data class ChatMessage(
-    val id: String = "",
-    val content: String = "",
-    val senderId: String = "",
-    val senderName: String = "",
-    val timestamp: Long = System.currentTimeMillis(),
-    val messageType: MessageType = MessageType.TEXT,
-    val deliveryStatus: DeliveryStatus = DeliveryStatus.SENDING
+    val id: String,
+    val content: String,
+    val timestamp: Long,
+    val senderId: String,
+    val roomId: String,
+    val deliveryState: String,
+    val isFromMe: Boolean = false
 )
-
-enum class MessageType {
-    TEXT, IMAGE, FILE
-}
-
-enum class DeliveryStatus {
-    SENDING, SENT, DELIVERED, FAILED
-}

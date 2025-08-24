@@ -1,26 +1,36 @@
 package com.kaifcodec.p2pchat.models
 
-import com.google.gson.Gson
+import com.google.gson.annotations.SerializedName
 
 data class SignalData(
-    val type: SignalType = SignalType.OFFER,
-    val data: String = "",
-    val senderId: String = "",
-    val targetId: String = "",
+    @SerializedName("type")
+    val type: String,
+
+    @SerializedName("data")
+    val data: Map<String, Any>,
+
+    @SerializedName("timestamp")
     val timestamp: Long = System.currentTimeMillis(),
-    val roomId: String = ""
+
+    @SerializedName("userId")
+    val userId: String
 )
 
-enum class SignalType {
-    OFFER, ANSWER, ICE_CANDIDATE, ROOM_JOIN, ROOM_LEAVE, HEARTBEAT
-}
+data class IceCandidateData(
+    @SerializedName("candidate")
+    val candidate: String,
 
-fun SignalData.toJson(): String = Gson().toJson(this)
+    @SerializedName("sdpMid")
+    val sdpMid: String?,
 
-fun String.toSignalData(): SignalData? {
-    return try {
-        Gson().fromJson(this, SignalData::class.java)
-    } catch (e: Exception) {
-        null
-    }
-}
+    @SerializedName("sdpMLineIndex")
+    val sdpMLineIndex: Int
+)
+
+data class SessionDescriptionData(
+    @SerializedName("type")
+    val type: String,
+
+    @SerializedName("sdp")
+    val sdp: String
+)

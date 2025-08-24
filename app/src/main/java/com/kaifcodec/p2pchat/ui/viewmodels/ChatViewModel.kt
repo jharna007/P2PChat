@@ -1,309 +1,323 @@
 package com.kaifcodec.p2pchat.ui.viewmodels
 
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.kaifcodec.p2pchat.data.local.AppDatabase
-import com.kaifcodec.p2pchat.data.remote.FirebaseSignaling
 import com.kaifcodec.p2pchat.data.repository.ChatRepository
-import com.kaifcodec.p2pchat.models.*
-import com.kaifcodec.p2pchat.utils.Constants
-import com.kaifcodec.p2pchat.utils.Logger
-import com.kaifcodec.p2pchat.utils.generateRoomCode
-import com.kaifcodec.p2pchat.utils.generateUserId
+import com.kaifcodec.p2pchat.models.ChatMessage
+import com.kaifcodec.p2pchat.models.ConnectionState
+import com.kaifcodec.p2pchat.models.SignalData
+import com.kaifcodec.p2pchat.utils.*
 import com.kaifcodec.p2pchat.webrtc.WebRTCClient
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import org.webrtc.PeerConnection
 
-class ChatViewModel(application: Application) : AndroidViewModel(application) {
+class ChatViewModel(
+    private val repository: ChatRepository,
+    private val webRTCClient: WebRTCClient
+) : ViewModel() {
 
-    private val repository = ChatRepository(
-        AppDatabase.getDatabase(application).messageDao(),
-        FirebaseSignaling()
-    )
+    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val messages: StateFlow<List<ChatMessage>> = _messages
 
-    private var webRTCClient: WebRTCClient? = null
-    private val _connectionState = MutableLiveData<ConnectionState>()
-    val connectionState: LiveData<ConnectionState> = _connectionState
+    private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
+    val connectionState: StateFlow<ConnectionState> = _connectionState
 
-    private val _messages = MutableLiveData<List<ChatMessage>>()
-    val messages: LiveData<List<ChatMessage>> = _messages
+    private val _currentRoom = MutableStateFlow<String?>(null)
+    val currentRoom: StateFlow<String?> = _currentRoom
 
-    private val _isConnected = MutableLiveData<Boolean>()
-    val isConnected: LiveData<Boolean> = _isConnected
+    private val _userId = MutableStateFlow(generateUserId())
+    val userId: StateFlow<String> = _userId
 
-    private val _roomId = MutableLiveData<String>()
-    val roomId: LiveData<String> = _roomId
+    private val _recentRooms = MutableStateFlow<List<String>>(emptyList())
+    val recentRooms: StateFlow<List<String>> = _recentRooms
 
-    private val _error = MutableLiveData<String>()
-    val error: LiveData<String> = _error
+    private val _errorMessage = MutableSharedFlow<String>()
+    val errorMessage: SharedFlow<String> = _errorMessage
 
-    private var currentUserId: String = generateUserId()
-    private var currentRoomId: String = ""
-    private var isCaller: Boolean = false
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading: StateFlow<Boolean> = _isLoading
 
-    // Rate limiting for messages
-    private val messageTimes = mutableListOf<Long>()
-
-    fun createRoom(): String {
-        val newRoomId = generateRoomCode()
-        _roomId.value = newRoomId
-        currentRoomId = newRoomId
-        isCaller = true
-
+    init {
+        // Observe WebRTC connection state
         viewModelScope.launch {
-            try {
-                val success = repository.createRoom(newRoomId, currentUserId)
-                if (success) {
-                    initializeWebRTC(newRoomId, true)
-                    Logger.d("Room created: $newRoomId")
-                } else {
-                    _error.value = "Failed to create room"
-                }
-            } catch (e: Exception) {
-                Logger.e("Error creating room", e)
-                _error.value = "Error creating room: ${e.message}"
+            webRTCClient.connectionState.collect { state ->
+                _connectionState.value = state
             }
         }
 
-        return newRoomId
+        // Initialize WebRTC
+        webRTCClient.initialize()
+        setupWebRTCListeners()
+        loadRecentRooms()
     }
 
-    fun joinRoom(roomId: String) {
-        if (roomId.length != Constants.ROOM_CODE_LENGTH) {
-            _error.value = "Invalid room code"
+    private fun setupWebRTCListeners() {
+        webRTCClient.setMessageListener { messageContent ->
+            val roomId = _currentRoom.value ?: return@setMessageListener
+            val message = ChatMessage(
+                id = generateMessageId(),
+                content = messageContent,
+                timestamp = System.currentTimeMillis(),
+                senderId = "remote", // Remote user ID
+                roomId = roomId,
+                deliveryState = Constants.MESSAGE_STATE_DELIVERED,
+                isFromMe = false
+            )
+
+            viewModelScope.launch {
+                repository.insertMessage(message)
+            }
+        }
+
+        webRTCClient.setSignalListener { signalType, data ->
+            val roomId = _currentRoom.value ?: return@setSignalListener
+            val signalData = SignalData(
+                type = signalType,
+                data = data,
+                userId = _userId.value
+            )
+
+            viewModelScope.launch {
+                repository.sendSignal(roomId, _userId.value, signalData)
+            }
+        }
+    }
+
+    fun createRoom(): String {
+        val roomCode = generateRoomCode()
+        _isLoading.value = true
+
+        viewModelScope.launch {
+            try {
+                val success = repository.createRoom(roomCode)
+                if (success) {
+                    _currentRoom.value = roomCode
+                    startListeningForSignals(roomCode)
+                    loadMessagesForRoom(roomCode)
+                } else {
+                    _errorMessage.emit("Failed to create room")
+                }
+            } catch (e: Exception) {
+                _errorMessage.emit("Error creating room: ${e.message}")
+                Logger.e("Error creating room", e)
+            } finally {
+                _isLoading.value = false
+            }
+        }
+
+        return roomCode
+    }
+
+    fun joinRoom(roomCode: String) {
+        if (!roomCode.isValidRoomCode()) {
+            viewModelScope.launch {
+                _errorMessage.emit("Invalid room code format")
+            }
             return
         }
 
-        _roomId.value = roomId
-        currentRoomId = roomId
-        isCaller = false
+        _isLoading.value = true
 
         viewModelScope.launch {
             try {
-                val isActive = repository.isRoomActive(roomId)
-                if (!isActive) {
-                    _error.value = "Room not found or expired"
-                    return@launch
-                }
-
-                val success = repository.joinRoom(roomId, currentUserId)
+                val success = repository.joinRoom(roomCode)
                 if (success) {
-                    initializeWebRTC(roomId, false)
-                    Logger.d("Joined room: $roomId")
+                    _currentRoom.value = roomCode
+                    startListeningForSignals(roomCode)
+                    loadMessagesForRoom(roomCode)
+                    createWebRTCOffer()
                 } else {
-                    _error.value = "Failed to join room"
+                    _errorMessage.emit("Failed to join room. Room may not exist or has expired.")
                 }
             } catch (e: Exception) {
+                _errorMessage.emit("Error joining room: ${e.message}")
                 Logger.e("Error joining room", e)
-                _error.value = "Error joining room: ${e.message}"
+            } finally {
+                _isLoading.value = false
             }
         }
     }
 
-    private fun initializeWebRTC(roomId: String, isCaller: Boolean) {
-        try {
-            webRTCClient = WebRTCClient(
-                context = getApplication(),
-                userId = currentUserId,
-                onSignalNeed = { signalData ->
-                    sendSignal(roomId, signalData)
-                },
-                onMessageReceived = { message ->
-                    handleReceivedMessage(message)
-                },
-                onConnectionStateChange = { state ->
-                    handleConnectionStateChange(state)
+    private fun createWebRTCOffer() {
+        webRTCClient.createOffer(
+            onSuccess = { type, sdp ->
+                val roomId = _currentRoom.value ?: return@createOffer
+                val signalData = SignalData(
+                    type = Constants.SIGNAL_TYPE_OFFER,
+                    data = mapOf("type" to type, "sdp" to sdp),
+                    userId = _userId.value
+                )
+
+                viewModelScope.launch {
+                    repository.sendSignal(roomId, _userId.value, signalData)
                 }
-            )
-
-            val initialized = webRTCClient?.initializePeerConnection() ?: false
-            if (!initialized) {
-                _error.value = "Failed to initialize WebRTC"
-                return
-            }
-
-            if (isCaller) {
-                webRTCClient?.createDataChannel()
-                startCall()
-            }
-
-            // Start listening for signals
-            listenForSignals(roomId)
-
-            // Load existing messages
-            loadMessages(roomId)
-
-        } catch (e: Exception) {
-            Logger.e("Error initializing WebRTC", e)
-            _error.value = "Error initializing connection: ${e.message}"
-        }
-    }
-
-    private fun startCall() {
-        viewModelScope.launch {
-            try {
-                _connectionState.value = ConnectionState.CONNECTING
-                webRTCClient?.createOffer()
-            } catch (e: Exception) {
-                Logger.e("Error starting call", e)
-                _connectionState.value = ConnectionState.FAILED
-            }
-        }
-    }
-
-    private fun sendSignal(roomId: String, signalData: SignalData) {
-        viewModelScope.launch {
-            try {
-                repository.sendSignal(roomId, signalData)
-            } catch (e: Exception) {
-                Logger.e("Error sending signal", e)
-            }
-        }
-    }
-
-    private fun listenForSignals(roomId: String) {
-        viewModelScope.launch {
-            repository.listenForSignals(roomId, currentUserId)
-                .collect { signalData ->
-                    handleReceivedSignal(signalData)
+            },
+            onError = { error ->
+                viewModelScope.launch {
+                    _errorMessage.emit("Failed to create offer: $error")
                 }
-        }
-    }
-
-    private fun handleReceivedSignal(signalData: SignalData) {
-        viewModelScope.launch {
-            try {
-                when (signalData.type) {
-                    SignalType.OFFER -> {
-                        webRTCClient?.handleRemoteOffer(signalData.data)
-                    }
-                    SignalType.ANSWER -> {
-                        webRTCClient?.handleRemoteAnswer(signalData.data)
-                    }
-                    SignalType.ICE_CANDIDATE -> {
-                        webRTCClient?.handleIceCandidate(signalData.data)
-                    }
-                    else -> {
-                        Logger.d("Unhandled signal type: ${signalData.type}")
-                    }
-                }
-            } catch (e: Exception) {
-                Logger.e("Error handling received signal", e)
             }
-        }
-    }
-
-    private fun handleReceivedMessage(messageContent: String) {
-        val message = ChatMessage(
-            id = repository.generateMessageId(),
-            content = messageContent,
-            senderId = "remote",
-            senderName = "Remote User",
-            timestamp = System.currentTimeMillis(),
-            deliveryStatus = DeliveryStatus.DELIVERED
         )
+    }
 
+    private fun startListeningForSignals(roomId: String) {
         viewModelScope.launch {
-            repository.insertMessage(message, currentRoomId, false)
+            repository.listenForSignals(roomId, _userId.value).collect { signalData ->
+                handleSignalData(signalData)
+            }
         }
     }
 
-    private fun handleConnectionStateChange(state: PeerConnection.PeerConnectionState) {
-        val connectionState = when (state) {
-            PeerConnection.PeerConnectionState.NEW -> ConnectionState.DISCONNECTED
-            PeerConnection.PeerConnectionState.CONNECTING -> ConnectionState.CONNECTING
-            PeerConnection.PeerConnectionState.CONNECTED -> ConnectionState.CONNECTED
-            PeerConnection.PeerConnectionState.DISCONNECTED -> ConnectionState.DISCONNECTED
-            PeerConnection.PeerConnectionState.FAILED -> ConnectionState.FAILED
-            PeerConnection.PeerConnectionState.CLOSED -> ConnectionState.DISCONNECTED
+    private fun handleSignalData(signalData: SignalData) {
+        when (signalData.type) {
+            Constants.SIGNAL_TYPE_OFFER -> {
+                val type = signalData.data["type"] as? String ?: return
+                val sdp = signalData.data["sdp"] as? String ?: return
+
+                webRTCClient.setRemoteDescription(type, sdp,
+                    onSuccess = {
+                        createWebRTCAnswer()
+                    },
+                    onError = { error ->
+                        viewModelScope.launch {
+                            _errorMessage.emit("Failed to set remote description: $error")
+                        }
+                    }
+                )
+            }
+
+            Constants.SIGNAL_TYPE_ANSWER -> {
+                val type = signalData.data["type"] as? String ?: return
+                val sdp = signalData.data["sdp"] as? String ?: return
+
+                webRTCClient.setRemoteDescription(type, sdp,
+                    onSuccess = {
+                        Logger.d("Remote answer set successfully")
+                    },
+                    onError = { error ->
+                        viewModelScope.launch {
+                            _errorMessage.emit("Failed to set remote answer: $error")
+                        }
+                    }
+                )
+            }
+
+            Constants.SIGNAL_TYPE_ICE_CANDIDATE -> {
+                val candidate = signalData.data["candidate"] as? String ?: return
+                val sdpMid = signalData.data["sdpMid"] as? String
+                val sdpMLineIndex = (signalData.data["sdpMLineIndex"] as? Number)?.toInt() ?: return
+
+                webRTCClient.addIceCandidate(candidate, sdpMid, sdpMLineIndex)
+            }
         }
+    }
 
-        _connectionState.value = connectionState
-        _isConnected.value = state == PeerConnection.PeerConnectionState.CONNECTED
+    private fun createWebRTCAnswer() {
+        webRTCClient.createAnswer(
+            onSuccess = { type, sdp ->
+                val roomId = _currentRoom.value ?: return@createAnswer
+                val signalData = SignalData(
+                    type = Constants.SIGNAL_TYPE_ANSWER,
+                    data = mapOf("type" to type, "sdp" to sdp),
+                    userId = _userId.value
+                )
 
-        if (state == PeerConnection.PeerConnectionState.CONNECTED) {
-            Logger.d("WebRTC connection established")
+                viewModelScope.launch {
+                    repository.sendSignal(roomId, _userId.value, signalData)
+                }
+            },
+            onError = { error ->
+                viewModelScope.launch {
+                    _errorMessage.emit("Failed to create answer: $error")
+                }
+            }
+        )
+    }
+
+    private fun loadMessagesForRoom(roomId: String) {
+        viewModelScope.launch {
+            repository.getMessagesForRoom(roomId).collect { messages ->
+                _messages.value = messages
+            }
         }
     }
 
     fun sendMessage(content: String) {
-        if (content.isBlank() || content.length > Constants.MAX_MESSAGE_LENGTH) {
-            _error.value = "Invalid message content"
+        if (!content.isValidMessage()) {
+            viewModelScope.launch {
+                _errorMessage.emit("Invalid message. Check length and content.")
+            }
             return
         }
 
-        // Rate limiting
-        val currentTime = System.currentTimeMillis()
-        messageTimes.removeAll { currentTime - it > 60000 } // Remove messages older than 1 minute
-
-        if (messageTimes.size >= Constants.MAX_MESSAGES_PER_MINUTE) {
-            _error.value = "Too many messages. Please wait."
-            return
-        }
-
-        messageTimes.add(currentTime)
-
-        val message = ChatMessage(
-            id = repository.generateMessageId(),
-            content = content,
-            senderId = currentUserId,
-            senderName = "You",
-            timestamp = currentTime,
-            deliveryStatus = DeliveryStatus.SENDING
-        )
+        val roomId = _currentRoom.value ?: return
 
         viewModelScope.launch {
             try {
-                // Save to local database first
-                repository.insertMessage(message, currentRoomId, true)
+                // Check rate limit
+                if (!repository.canSendMessage(roomId, _userId.value)) {
+                    _errorMessage.emit("Rate limit exceeded. Please wait before sending another message.")
+                    return@launch
+                }
 
-                // Send via WebRTC
-                val sent = webRTCClient?.sendMessage(content) ?: false
-                val status = if (sent) DeliveryStatus.SENT else DeliveryStatus.FAILED
+                val message = ChatMessage(
+                    id = generateMessageId(),
+                    content = content,
+                    timestamp = System.currentTimeMillis(),
+                    senderId = _userId.value,
+                    roomId = roomId,
+                    deliveryState = Constants.MESSAGE_STATE_SENDING,
+                    isFromMe = true
+                )
 
-                repository.updateMessageDeliveryStatus(message.id, status)
+                // Insert message locally first
+                repository.insertMessage(message)
+
+                // Try to send via WebRTC
+                val sent = webRTCClient.sendMessage(content)
+
+                val newState = if (sent) {
+                    Constants.MESSAGE_STATE_SENT
+                } else {
+                    Constants.MESSAGE_STATE_FAILED
+                }
+
+                repository.updateMessageDeliveryState(message.id, newState)
 
             } catch (e: Exception) {
+                _errorMessage.emit("Failed to send message: ${e.message}")
                 Logger.e("Error sending message", e)
-                repository.updateMessageDeliveryStatus(message.id, DeliveryStatus.FAILED)
             }
         }
     }
 
-    private fun loadMessages(roomId: String) {
+    fun leaveRoom() {
+        val roomId = _currentRoom.value ?: return
+
         viewModelScope.launch {
-            repository.getMessagesByRoom(roomId)
-                .collect { messageList ->
-                    _messages.value = messageList
-                }
+            repository.leaveRoom(roomId)
+            webRTCClient.disconnect()
+            _currentRoom.value = null
+            _messages.value = emptyList()
+            _connectionState.value = ConnectionState.Disconnected
         }
     }
 
-    fun leaveRoom() {
+    private fun loadRecentRooms() {
         viewModelScope.launch {
             try {
-                repository.leaveRoom(currentRoomId, currentUserId)
-                webRTCClient?.close()
-                webRTCClient = null
-                _connectionState.value = ConnectionState.DISCONNECTED
-                _isConnected.value = false
-                Logger.d("Left room: $currentRoomId")
+                val rooms = repository.getRecentRooms()
+                _recentRooms.value = rooms
             } catch (e: Exception) {
-                Logger.e("Error leaving room", e)
+                Logger.e("Error loading recent rooms", e)
             }
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        webRTCClient?.close()
+        repository.stopListening()
+        webRTCClient.destroy()
+        Logger.d("ChatViewModel cleared")
     }
-
-    fun getCurrentUserId(): String = currentUserId
-    fun getCurrentRoomId(): String = currentRoomId
-    fun getIsCaller(): Boolean = isCaller
 }

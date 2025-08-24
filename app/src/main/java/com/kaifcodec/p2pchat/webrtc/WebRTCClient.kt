@@ -1,368 +1,288 @@
 package com.kaifcodec.p2pchat.webrtc
 
 import android.content.Context
-import com.kaifcodec.p2pchat.models.SignalData
-import com.kaifcodec.p2pchat.models.SignalType
+import com.kaifcodec.p2pchat.models.ConnectionState
 import com.kaifcodec.p2pchat.utils.Constants
 import com.kaifcodec.p2pchat.utils.Logger
-import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.webrtc.*
 import java.nio.ByteBuffer
-import java.nio.charset.StandardCharsets
+import java.util.*
 
-class WebRTCClient(
-    private val context: Context,
-    private val userId: String,
-    private val onSignalNeed: (SignalData) -> Unit,
-    private val onMessageReceived: (String) -> Unit,
-    private val onConnectionStateChange: (PeerConnection.PeerConnectionState) -> Unit
-) {
+class WebRTCClient(private val context: Context) {
 
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
-    private var remoteDataChannel: DataChannel? = null
 
-    private val _isConnected = MutableStateFlow(false)
-    val isConnected: StateFlow<Boolean> = _isConnected
+    private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
+    val connectionState: StateFlow<ConnectionState> = _connectionState
 
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var onMessageReceived: ((String) -> Unit)? = null
+    private var onSignalData: ((String, Map<String, Any>) -> Unit)? = null
 
-    init {
+    fun initialize() {
+        Logger.d("Initializing WebRTC")
         initializePeerConnectionFactory()
+        createPeerConnection()
     }
 
     private fun initializePeerConnectionFactory() {
-        val encoderFactory = DefaultVideoEncoderFactory(
-            EglBase.create().eglBaseContext,
-            false,
-            false
-        )
+        val initOptions = PeerConnectionFactory.InitializationOptions.builder(context)
+            .setEnableInternalTracer(false)
+            .createInitializationOptions()
 
-        val decoderFactory = DefaultVideoDecoderFactory(EglBase.create().eglBaseContext)
+        PeerConnectionFactory.initialize(initOptions)
 
+        val options = PeerConnectionFactory.Options()
         peerConnectionFactory = PeerConnectionFactory.builder()
-            .setVideoEncoderFactory(encoderFactory)
-            .setVideoDecoderFactory(decoderFactory)
+            .setOptions(options)
             .createPeerConnectionFactory()
     }
 
-    fun initializePeerConnection(): Boolean {
-        try {
-            val iceServers = Constants.STUN_SERVERS.map { url ->
-                PeerConnection.IceServer.builder(url).createIceServer()
-            }
-
-            val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
-                tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.DISABLED
-                bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
-                rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-                continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-            }
-
-            peerConnection = peerConnectionFactory?.createPeerConnection(
-                rtcConfig,
-                PeerConnectionObserver()
-            )
-
-            return peerConnection != null
-        } catch (e: Exception) {
-            Logger.e("Failed to initialize peer connection", e)
-            return false
+    private fun createPeerConnection() {
+        val iceServers = Constants.ICE_SERVERS.map { url ->
+            PeerConnection.IceServer.builder(url).createIceServer()
         }
-    }
 
-    fun createDataChannel() {
-        try {
-            val init = DataChannel.Init().apply {
-                ordered = true
-                maxRetransmitTimeMs = -1
-                maxRetransmits = -1
-                protocol = ""
-                negotiated = false
-                id = -1
+        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
+            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.DISABLED
+            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+            rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            keyType = PeerConnection.KeyType.ECDSA
+        }
+
+        peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
+            override fun onSignalingChange(newState: PeerConnection.SignalingState?) {
+                Logger.d("Signaling state changed: \$newState")
             }
 
-            dataChannel = peerConnection?.createDataChannel("messages", init)
-            dataChannel?.registerObserver(DataChannelObserver())
-            Logger.d("Data channel created successfully")
-        } catch (e: Exception) {
-            Logger.e("Failed to create data channel", e)
-        }
-    }
-
-    suspend fun createOffer(): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                val mediaConstraints = MediaConstraints()
-                val offerSdp = peerConnection?.createOffer(mediaConstraints)
-                if (offerSdp != null) {
-                    peerConnection?.setLocalDescription(offerSdp)
-
-                    val signalData = SignalData(
-                        type = SignalType.OFFER,
-                        data = offerSdp.description,
-                        senderId = userId
-                    )
-
-                    withContext(Dispatchers.Main) {
-                        onSignalNeed(signalData)
+            override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
+                Logger.d("ICE connection state changed: \$newState")
+                when (newState) {
+                    PeerConnection.IceConnectionState.CONNECTED -> {
+                        _connectionState.value = ConnectionState.Connected
                     }
-                    true
-                } else {
-                    false
-                }
-            } catch (e: Exception) {
-                Logger.e("Failed to create offer", e)
-                false
-            }
-        }
-    }
-
-    suspend fun createAnswer(): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                val mediaConstraints = MediaConstraints()
-                val answerSdp = peerConnection?.createAnswer(mediaConstraints)
-                if (answerSdp != null) {
-                    peerConnection?.setLocalDescription(answerSdp)
-
-                    val signalData = SignalData(
-                        type = SignalType.ANSWER,
-                        data = answerSdp.description,
-                        senderId = userId
-                    )
-
-                    withContext(Dispatchers.Main) {
-                        onSignalNeed(signalData)
+                    PeerConnection.IceConnectionState.DISCONNECTED -> {
+                        _connectionState.value = ConnectionState.Disconnected
                     }
-                    true
-                } else {
-                    false
+                    PeerConnection.IceConnectionState.FAILED -> {
+                        _connectionState.value = ConnectionState.Failed("ICE connection failed")
+                    }
+                    PeerConnection.IceConnectionState.CHECKING -> {
+                        _connectionState.value = ConnectionState.Connecting
+                    }
+                    else -> { /* Handle other states */ }
                 }
-            } catch (e: Exception) {
-                Logger.e("Failed to create answer", e)
-                false
             }
-        }
+
+            override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState?) {
+                Logger.d("ICE gathering state changed: \$newState")
+            }
+
+            override fun onIceCandidate(candidate: IceCandidate?) {
+                candidate?.let {
+                    Logger.d("New ICE candidate: \${it.sdp}")
+                    val candidateData = mapOf(
+                        "candidate" to it.sdp,
+                        "sdpMid" to (it.sdpMid ?: ""),
+                        "sdpMLineIndex" to it.sdpMLineIndex
+                    )
+                    onSignalData?.invoke(Constants.SIGNAL_TYPE_ICE_CANDIDATE, candidateData)
+                }
+            }
+
+            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {
+                Logger.d("ICE candidates removed")
+            }
+
+            override fun onAddStream(stream: MediaStream?) {
+                // Not used for data channel only
+            }
+
+            override fun onRemoveStream(stream: MediaStream?) {
+                // Not used for data channel only
+            }
+
+            override fun onDataChannel(dataChannel: DataChannel?) {
+                Logger.d("Data channel received")
+                setupDataChannel(dataChannel)
+            }
+
+            override fun onRenegotiationNeeded() {
+                Logger.d("Renegotiation needed")
+            }
+
+            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+                // Not used for data channel only
+            }
+        })
     }
 
-    suspend fun handleRemoteOffer(offerSdp: String): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                val sessionDescription = SessionDescription(
-                    SessionDescription.Type.OFFER,
-                    offerSdp
-                )
-                peerConnection?.setRemoteDescription(sessionDescription)
-                createAnswer()
-            } catch (e: Exception) {
-                Logger.e("Failed to handle remote offer", e)
-                false
-            }
+    fun createOffer(onSuccess: (String, String) -> Unit, onError: (String) -> Unit) {
+        Logger.d("Creating offer")
+        _connectionState.value = ConnectionState.Connecting
+
+        // Create data channel first
+        val dataChannelInit = DataChannel.Init().apply {
+            ordered = true
+            maxRetransmits = 3
         }
+
+        dataChannel = peerConnection?.createDataChannel("messages", dataChannelInit)
+        setupDataChannel(dataChannel)
+
+        peerConnection?.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(sessionDescription: SessionDescription?) {
+                sessionDescription?.let { sdp ->
+                    peerConnection?.setLocalDescription(object : SdpObserver {
+                        override fun onSetSuccess() {
+                            Logger.d("Local description set successfully")
+                            onSuccess(sdp.type.canonicalForm(), sdp.description)
+                        }
+
+                        override fun onSetFailure(error: String?) {
+                            Logger.e("Failed to set local description: \$error")
+                            onError(error ?: "Failed to set local description")
+                        }
+
+                        override fun onCreateSuccess(p0: SessionDescription?) {}
+                        override fun onCreateFailure(p0: String?) {}
+                    }, sdp)
+                }
+            }
+
+            override fun onCreateFailure(error: String?) {
+                Logger.e("Failed to create offer: \$error")
+                onError(error ?: "Failed to create offer")
+            }
+
+            override fun onSetSuccess() {}
+            override fun onSetFailure(error: String?) {}
+        }, MediaConstraints())
     }
 
-    suspend fun handleRemoteAnswer(answerSdp: String): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                val sessionDescription = SessionDescription(
-                    SessionDescription.Type.ANSWER,
-                    answerSdp
-                )
-                peerConnection?.setRemoteDescription(sessionDescription)
-                true
-            } catch (e: Exception) {
-                Logger.e("Failed to handle remote answer", e)
-                false
+    fun createAnswer(onSuccess: (String, String) -> Unit, onError: (String) -> Unit) {
+        Logger.d("Creating answer")
+        peerConnection?.createAnswer(object : SdpObserver {
+            override fun onCreateSuccess(sessionDescription: SessionDescription?) {
+                sessionDescription?.let { sdp ->
+                    peerConnection?.setLocalDescription(object : SdpObserver {
+                        override fun onSetSuccess() {
+                            Logger.d("Local description set successfully")
+                            onSuccess(sdp.type.canonicalForm(), sdp.description)
+                        }
+
+                        override fun onSetFailure(error: String?) {
+                            Logger.e("Failed to set local description: \$error")
+                            onError(error ?: "Failed to set local description")
+                        }
+
+                        override fun onCreateSuccess(p0: SessionDescription?) {}
+                        override fun onCreateFailure(p0: String?) {}
+                    }, sdp)
+                }
             }
-        }
+
+            override fun onCreateFailure(error: String?) {
+                Logger.e("Failed to create answer: \$error")
+                onError(error ?: "Failed to create answer")
+            }
+
+            override fun onSetSuccess() {}
+            override fun onSetFailure(error: String?) {}
+        }, MediaConstraints())
     }
 
-    fun handleIceCandidate(candidateData: String) {
-        try {
-            val parts = candidateData.split("|||")
-            if (parts.size >= 3) {
-                val candidate = IceCandidate(
-                    parts[0], // sdpMid
-                    parts[1].toInt(), // sdpMLineIndex
-                    parts[2] // sdp
-                )
-                peerConnection?.addIceCandidate(candidate)
-                Logger.d("Added ICE candidate")
+    fun setRemoteDescription(type: String, sdp: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        Logger.d("Setting remote description")
+        val sessionDescription = SessionDescription(
+            SessionDescription.Type.fromCanonicalForm(type),
+            sdp
+        )
+
+        peerConnection?.setRemoteDescription(object : SdpObserver {
+            override fun onSetSuccess() {
+                Logger.d("Remote description set successfully")
+                onSuccess()
             }
-        } catch (e: Exception) {
-            Logger.e("Failed to handle ICE candidate", e)
-        }
+
+            override fun onSetFailure(error: String?) {
+                Logger.e("Failed to set remote description: \$error")
+                onError(error ?: "Failed to set remote description")
+            }
+
+            override fun onCreateSuccess(p0: SessionDescription?) {}
+            override fun onCreateFailure(p0: String?) {}
+        }, sessionDescription)
+    }
+
+    fun addIceCandidate(candidate: String, sdpMid: String?, sdpMLineIndex: Int) {
+        Logger.d("Adding ICE candidate")
+        val iceCandidate = IceCandidate(sdpMid, sdpMLineIndex, candidate)
+        peerConnection?.addIceCandidate(iceCandidate)
+    }
+
+    private fun setupDataChannel(channel: DataChannel?) {
+        channel?.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(amount: Long) {
+                Logger.d("Data channel buffered amount changed: \$amount")
+            }
+
+            override fun onStateChange() {
+                Logger.d("Data channel state changed: \${channel.state()}")
+                when (channel.state()) {
+                    DataChannel.State.OPEN -> {
+                        _connectionState.value = ConnectionState.Connected
+                    }
+                    DataChannel.State.CLOSED -> {
+                        _connectionState.value = ConnectionState.Disconnected
+                    }
+                    else -> { /* Handle other states */ }
+                }
+            }
+
+            override fun onMessage(buffer: DataChannel.Buffer?) {
+                buffer?.data?.let { data ->
+                    val message = String(data.array())
+                    Logger.d("Received message: \$message")
+                    onMessageReceived?.invoke(message)
+                }
+            }
+        })
     }
 
     fun sendMessage(message: String): Boolean {
         return try {
-            val dataChannel = this.dataChannel ?: this.remoteDataChannel
-            if (dataChannel?.state() == DataChannel.State.OPEN) {
-                val buffer = StandardCharsets.UTF_8.encode(message)
-                val dataBuffer = DataChannel.Buffer(buffer, false)
-                dataChannel.send(dataBuffer)
-                Logger.d("Message sent: $message")
-                true
-            } else {
-                Logger.w("Data channel not open, state: \${dataChannel?.state()}")
-                false
-            }
+            val buffer = ByteBuffer.wrap(message.toByteArray())
+            val dataChannelBuffer = DataChannel.Buffer(buffer, false)
+            dataChannel?.send(dataChannelBuffer) == true
         } catch (e: Exception) {
             Logger.e("Failed to send message", e)
             false
         }
     }
 
-    fun close() {
-        try {
-            dataChannel?.close()
-            remoteDataChannel?.close()
-            peerConnection?.close()
-            peerConnectionFactory?.dispose()
-            scope.cancel()
-            Logger.d("WebRTC client closed")
-        } catch (e: Exception) {
-            Logger.e("Error closing WebRTC client", e)
-        }
+    fun setMessageListener(listener: (String) -> Unit) {
+        onMessageReceived = listener
     }
 
-    private inner class PeerConnectionObserver : PeerConnection.Observer {
-
-        override fun onIceCandidate(candidate: IceCandidate) {
-            val candidateData = "\${candidate.sdpMid}|||\${candidate.sdpMLineIndex}|||\${candidate.sdp}"
-            val signalData = SignalData(
-                type = SignalType.ICE_CANDIDATE,
-                data = candidateData,
-                senderId = userId
-            )
-            onSignalNeed(signalData)
-            Logger.d("ICE candidate generated")
-        }
-
-        override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
-            Logger.d("Connection state changed: $newState")
-            _isConnected.value = newState == PeerConnection.PeerConnectionState.CONNECTED
-            onConnectionStateChange(newState)
-        }
-
-        override fun onDataChannel(dataChannel: DataChannel) {
-            Logger.d("Data channel received")
-            remoteDataChannel = dataChannel
-            dataChannel.registerObserver(DataChannelObserver())
-        }
-
-        override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) {
-            Logger.d("ICE connection state: $newState")
-        }
-
-        override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) {
-            Logger.d("ICE gathering state: $newState")
-        }
-
-        override fun onSignalingChange(newState: PeerConnection.SignalingState) {
-            Logger.d("Signaling state: $newState")
-        }
-
-        override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {
-            Logger.d("ICE candidates removed")
-        }
-
-        override fun onAddStream(stream: MediaStream) {}
-        override fun onRemoveStream(stream: MediaStream) {}
-        override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) {}
-        override fun onRenegotiationNeeded() {}
+    fun setSignalListener(listener: (String, Map<String, Any>) -> Unit) {
+        onSignalData = listener
     }
 
-    private inner class DataChannelObserver : DataChannel.Observer {
+    fun disconnect() {
+        Logger.d("Disconnecting WebRTC")
+        dataChannel?.close()
+        peerConnection?.close()
+        _connectionState.value = ConnectionState.Disconnected
+    }
 
-        override fun onMessage(buffer: DataChannel.Buffer) {
-            try {
-                val data = ByteArray(buffer.data.remaining())
-                buffer.data.get(data)
-                val message = String(data, StandardCharsets.UTF_8)
-                Logger.d("Message received: $message")
-                onMessageReceived(message)
-            } catch (e: Exception) {
-                Logger.e("Failed to process received message", e)
-            }
-        }
-
-        override fun onStateChange() {
-            val state = dataChannel?.state() ?: remoteDataChannel?.state()
-            Logger.d("Data channel state changed: $state")
-        }
-
-        override fun onBufferedAmountChange(amount: Long) {
-            Logger.d("Data channel buffered amount: $amount")
-        }
+    fun destroy() {
+        disconnect()
+        peerConnectionFactory?.dispose()
+        PeerConnectionFactory.shutdownInternalTracer()
     }
 }
-
-// Extension functions for better coroutine support
-private suspend fun PeerConnection.createOffer(constraints: MediaConstraints): SessionDescription? =
-    suspendCancellableCoroutine { continuation ->
-        createOffer(object : SdpObserver {
-            override fun onCreateSuccess(sessionDescription: SessionDescription) {
-                continuation.resume(sessionDescription, null)
-            }
-
-            override fun onCreateFailure(error: String) {
-                continuation.resume(null, null)
-            }
-
-            override fun onSetSuccess() {}
-            override fun onSetFailure(error: String) {}
-        }, constraints)
-    }
-
-private suspend fun PeerConnection.createAnswer(constraints: MediaConstraints): SessionDescription? =
-    suspendCancellableCoroutine { continuation ->
-        createAnswer(object : SdpObserver {
-            override fun onCreateSuccess(sessionDescription: SessionDescription) {
-                continuation.resume(sessionDescription, null)
-            }
-
-            override fun onCreateFailure(error: String) {
-                continuation.resume(null, null)
-            }
-
-            override fun onSetSuccess() {}
-            override fun onSetFailure(error: String) {}
-        }, constraints)
-    }
-
-private suspend fun PeerConnection.setLocalDescription(sessionDescription: SessionDescription): Boolean =
-    suspendCancellableCoroutine { continuation ->
-        setLocalDescription(object : SdpObserver {
-            override fun onSetSuccess() {
-                continuation.resume(true, null)
-            }
-
-            override fun onSetFailure(error: String) {
-                continuation.resume(false, null)
-            }
-
-            override fun onCreateSuccess(sessionDescription: SessionDescription) {}
-            override fun onCreateFailure(error: String) {}
-        }, sessionDescription)
-    }
-
-private suspend fun PeerConnection.setRemoteDescription(sessionDescription: SessionDescription): Boolean =
-    suspendCancellableCoroutine { continuation ->
-        setRemoteDescription(object : SdpObserver {
-            override fun onSetSuccess() {
-                continuation.resume(true, null)
-            }
-
-            override fun onSetFailure(error: String) {
-                continuation.resume(false, null)
-            }
-
-            override fun onCreateSuccess(sessionDescription: SessionDescription) {}
-            override fun onCreateFailure(error: String) {}
-        }, sessionDescription)
-    }

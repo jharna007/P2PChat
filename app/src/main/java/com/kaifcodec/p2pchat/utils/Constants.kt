@@ -1,41 +1,43 @@
 package com.kaifcodec.p2pchat.utils
 
 object Constants {
+    // Room codes
+    const val ROOM_CODE_LENGTH = 6
+    const val ROOM_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-    // Firebase Collections
-    const val ROOMS_COLLECTION = "rooms"
-    const val SIGNALS_COLLECTION = "signals" 
-    const val METADATA_COLLECTION = "metadata"
-
-    // Room expiry time (24 hours in milliseconds)
-    const val ROOM_EXPIRY_TIME = 24 * 60 * 60 * 1000L
-
-    // WebRTC Configuration
-    val STUN_SERVERS = listOf(
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-        "stun:stun2.l.google.com:19302"
-    )
-
-    // Connection timeouts
-    const val CONNECTION_TIMEOUT = 30000L // 30 seconds
-    const val RECONNECTION_TIMEOUT = 5000L // 5 seconds
-
-    // Message limits
+    // Message constraints
     const val MAX_MESSAGE_LENGTH = 1000
     const val MAX_MESSAGES_PER_MINUTE = 10
 
-    // Room code configuration
-    const val ROOM_CODE_LENGTH = 6
-    const val ROOM_CODE_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    // WebRTC configuration
+    val ICE_SERVERS = listOf(
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302"
+    )
 
-    // Intent extras
-    const val EXTRA_ROOM_ID = "room_id"
-    const val EXTRA_IS_CALLER = "is_caller"
-    const val EXTRA_USER_ID = "user_id"
+    // Connection timeouts
+    const val CONNECTION_TIMEOUT_MS = 30000L
 
-    // Shared preferences
-    const val PREF_NAME = "p2pchat_prefs"
-    const val PREF_USER_ID = "user_id"
-    const val PREF_USERNAME = "username"
+    // Firestore collections
+    const val ROOMS_COLLECTION = "rooms"
+    const val SIGNALS_COLLECTION = "signals"
+    const val METADATA_COLLECTION = "metadata"
+
+    // Room expiry
+    const val ROOM_EXPIRY_HOURS = 24L
+
+    // Database
+    const val DATABASE_NAME = "p2pchat_database"
+    const val DATABASE_PASSPHRASE_KEY = "db_passphrase"
+
+    // Signal types
+    const val SIGNAL_TYPE_OFFER = "offer"
+    const val SIGNAL_TYPE_ANSWER = "answer"
+    const val SIGNAL_TYPE_ICE_CANDIDATE = "ice-candidate"
+
+    // Message delivery states
+    const val MESSAGE_STATE_SENDING = "sending"
+    const val MESSAGE_STATE_SENT = "sent"
+    const val MESSAGE_STATE_DELIVERED = "delivered"
+    const val MESSAGE_STATE_FAILED = "failed"
 }

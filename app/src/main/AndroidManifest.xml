@@ -2,12 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Network permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+
+    <!-- Camera permission for QR scanning -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Vibration for notifications -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
@@ -25,7 +29,6 @@
         <activity
             android:name=".ui.main.MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait"
             android:theme="@style/Theme.P2PChat">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -36,16 +39,20 @@
         <activity
             android:name=".ui.chat.ChatActivity"
             android:exported="false"
-            android:screenOrientation="portrait"
-            android:theme="@style/Theme.P2PChat"
-            android:parentActivityName=".ui.main.MainActivity" />
+            android:parentActivityName=".ui.main.MainActivity"
+            android:theme="@style/Theme.P2PChat" />
 
         <activity
             android:name=".ui.join.JoinRoomActivity"
             android:exported="false"
+            android:parentActivityName=".ui.main.MainActivity"
+            android:theme="@style/Theme.P2PChat" />
+
+        <!-- ZXing Barcode Scanner Activity -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="portrait"
-            android:theme="@style/Theme.P2PChat"
-            android:parentActivityName=".ui.main.MainActivity" />
+            tools:replace="screenOrientation" />
 
     </application>
 

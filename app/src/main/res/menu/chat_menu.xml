@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/action_copy_room_code"
+        android:title="@string/copy_room_code"
+        android:icon="@drawable/ic_copy_24"
+        app:showAsAction="ifRoom" />
+
+    <item
+        android:id="@+id/action_leave_room"
+        android:title="@string/leave_room"
+        app:showAsAction="never" />
+
+</menu>

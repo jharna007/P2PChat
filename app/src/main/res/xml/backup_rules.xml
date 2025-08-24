@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Exclude sensitive data from backup -->
-    <exclude domain="sharedpref" path="p2pchat_prefs" />
-    <exclude domain="database" path="p2pchat_database" />
+    <!-- Exclude encrypted database and sensitive preferences -->
+    <exclude domain="database" />
+    <exclude domain="sharedpref" path="secure_prefs.xml" />
 </full-backup-content>
