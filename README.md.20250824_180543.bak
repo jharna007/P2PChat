@@ -183,8 +183,3 @@ For issues related to:
 ---
 
 **Note**: This is a production-ready implementation following Android development best practices. The code is extensively commented and structured for maintainability and scalability.
-
-Note: CI writes app/keystore.properties with:
-storeFile=keystore/release.keystore
-storePassword=... keyAlias=... keyPassword=...
-and places the keystore at app/keystore/release.keystore.
