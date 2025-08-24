@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "123456789012",
-    "project_id": "placeholder-project",
-    "storage_bucket": "placeholder-project.appspot.com"
+    "project_number": "837548183283",
+    "project_id": "p2pchat-9848d",
+    "storage_bucket": "p2pchat-9848d.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:123456789012:android:placeholder",
+        "mobilesdk_app_id": "1:837548183283:android:b1a5bb44a18cbed4ca7186",
         "android_client_info": {
           "package_name": "com.kaifcodec.p2pchat"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "placeholder-api-key"
+          "current_key": "AIzaSyCxTFVz6mJU8wq2NYM-O1r6sdOeO2giZwg"
         }
       ],
       "services": {

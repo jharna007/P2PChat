@@ -1,4 +1,4 @@
-name: P2PChat Android CI/CD
+name: Build P2PChat
 
 on:
   push:
@@ -9,166 +9,38 @@ on:
 
 jobs:
   build:
-    name: Build & Sign P2PChat APK
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
+    
+    - uses: actions/checkout@v4
+    
+    - uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v4
-        
-    - name: Cache Gradle Dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-          ~/.android/build-cache
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
-          
-    - name: Verify Google Services File
-      run: |
-        if [ -f "app/google-services.json" ]; then
-          echo "✓ google-services.json found"
-          echo "Package verification:"
-          grep -o '"package_name": "[^"]*"' app/google-services.json
-        else
-          echo "❌ google-services.json not found - please add it to the app/ directory"
-          exit 1
-        fi
-          
-    - name: Make Gradlew Executable
-      run: chmod +x gradlew
-      
-    - name: Generate Debug Keystore
+    - uses: android-actions/setup-android@v3
+    
+    - run: chmod +x gradlew
+    
+    - name: Generate Keystore
       run: |
         mkdir -p app/keystore
-        keytool -genkey -v -keystore app/keystore/debug.keystore \
-          -storepass android -alias androiddebugkey -keypass android \
-          -keyalg RSA -keysize 2048 -validity 10000 \
-          -dname "CN=Android Debug,O=Android,C=US"
-        echo "✓ Debug keystore generated"
-      
-    - name: Generate Release Keystore
-      run: |
         keytool -genkey -v -keystore app/keystore/release.keystore \
           -storepass p2pchat123 -alias p2pchatkey -keypass p2pchat123 \
           -keyalg RSA -keysize 2048 -validity 25000 \
           -dname "CN=P2PChat,O=KaifCodec,C=US"
-        echo "✓ Release keystore generated"
-        
-    - name: Create Keystore Properties
-      run: |
         cat > keystore.properties << EOF
-        storeFile=keystore/release.keystore
+        storeFile=app/keystore/release.keystore
         storePassword=p2pchat123
         keyAlias=p2pchatkey
         keyPassword=p2pchat123
         EOF
-        echo "✓ Keystore properties created"
-      
-    - name: Run Android Lint
-      run: ./gradlew lintDebug
-      continue-on-error: true
-      
-    - name: Run Unit Tests
-      run: ./gradlew testDebugUnitTest
-      continue-on-error: true
-      
-    - name: Build Debug APK
-      run: ./gradlew assembleDebug
-      
-    - name: Build Signed Release APK
-      run: ./gradlew assembleRelease
-      
-    - name: Rename APKs
-      run: |
-        # Get version info
-        VERSION_NAME=$(grep versionName app/build.gradle | awk '{print $2}' | tr -d '"')
-        VERSION_CODE=$(grep versionCode app/build.gradle | awk '{print $2}')
-        COMMIT_SHORT=$(git rev-parse --short HEAD)
-        
-        # Create output directory
-        mkdir -p output
-        
-        # Rename debug APK
-        if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-          cp app/build/outputs/apk/debug/app-debug.apk "output/P2PChat-v${VERSION_NAME}-debug-${COMMIT_SHORT}.apk"
-          echo "✓ Debug APK renamed"
-        fi
-        
-        # Rename release APK
-        if [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
-          cp app/build/outputs/apk/release/app-release.apk "output/P2PChat-v${VERSION_NAME}-release-${COMMIT_SHORT}.apk"
-          echo "✓ Release APK renamed and signed"
-        fi
-        
-        # Show APK info
-        ls -la output/
-        
-    - name: Upload Debug APK
-      uses: actions/upload-artifact@v4
+    
+    - run: ./gradlew assembleRelease
+    
+    - uses: actions/upload-artifact@v4
       with:
-        name: P2PChat-Debug-APK
-        path: output/*debug*.apk
-        retention-days: 30
-        
-    - name: Upload Release APK
-      uses: actions/upload-artifact@v4  
-      with:
-        name: P2PChat-Release-APK
-        path: output/*release*.apk
-        retention-days: 90
-        
-    - name: Upload Build Reports
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: Build-Reports
-        path: |
-          app/build/reports/lint-results-*.html
-          app/build/reports/tests/testDebugUnitTest/
-        retention-days: 14
-        
-    - name: Generate APK Info
-      if: always()
-      run: |
-        echo "## 📱 P2PChat Build Results" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -d "output" ] && [ "$(ls -A output)" ]; then
-          echo "### 📦 Generated APKs:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| APK Type | File Name | Size |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-----------|------|" >> $GITHUB_STEP_SUMMARY
-          
-          for apk in output/*.apk; do
-            if [ -f "$apk" ]; then
-              filename=$(basename "$apk")
-              size=$(du -h "$apk" | cut -f1)
-              if [[ $filename == *"debug"* ]]; then
-                echo "| 🐛 Debug | \`$filename\` | $size |" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "| 🚀 Release | \`$filename\` | $size |" >> $GITHUB_STEP_SUMMARY
-              fi
-            fi
-          done
-        else
-          echo "❌ No APKs generated" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### ℹ️ Build Info:" >> $GITHUB_STEP_SUMMARY
-        echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-        echo "- **Branch**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-        echo "- **Auto-signed**: ✅ Yes" >> $GITHUB_STEP_SUMMARY
+        name: P2PChat-APK
+        path: app/build/outputs/apk/release/app-release.apk
+
