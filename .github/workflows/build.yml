@@ -20,10 +20,11 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Gradle (pin 8.6)
+      # Option A: bump system Gradle to 8.7 to satisfy AGP's minimum requirement
+      - name: Setup Gradle (pin 8.7)
         uses: gradle/gradle-build-action@v3
         with:
-          gradle-version: 8.6
+          gradle-version: 8.7
 
       - name: Generate Release Keystore and properties
         run: |
@@ -39,7 +40,7 @@ jobs:
           keyPassword=p2pchat123
           EOF
 
-      # Uncomment this step ONLY if you have not committed your real google-services.json yet.
+      # Uncomment ONLY if you didn't commit your real google-services.json yet
       # - name: Add dummy google-services.json
       #   run: |
       #     cat > app/google-services.json << 'EOF'
