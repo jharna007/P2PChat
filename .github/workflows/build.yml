@@ -23,10 +23,10 @@ jobs:
         distribution: 'temurin'
         
     - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
+      uses: android-actions/setup-android@v4
         
     - name: Cache Gradle Dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.gradle/caches
@@ -117,21 +117,21 @@ jobs:
         ls -la output/
         
     - name: Upload Debug APK
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: P2PChat-Debug-APK
         path: output/*debug*.apk
         retention-days: 30
         
     - name: Upload Release APK
-      uses: actions/upload-artifact@v3  
+      uses: actions/upload-artifact@v4  
       with:
         name: P2PChat-Release-APK
         path: output/*release*.apk
         retention-days: 90
         
     - name: Upload Build Reports
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: Build-Reports
